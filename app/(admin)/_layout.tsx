@@ -35,6 +35,9 @@ export default function AdminLayout() {
       <Tabs.Screen name="Add Stock" options={{ href: null, tabBarStyle: { display: 'none' } }} />
       <Tabs.Screen name="Edit Product" options={{ href: null, tabBarStyle: { display: 'none' } }} />
       <Tabs.Screen name="Booking Details" options={{ href: null, tabBarStyle: { display: 'none' } }} />
+      <Tabs.Screen name="Add Sale" options={{ href: null, tabBarStyle: { display: 'none' } }} />
+      <Tabs.Screen name="Upcoming Services" options={{ href: null, tabBarStyle: { display: 'none' } }} />
+      <Tabs.Screen name="Sales History" options={{ href: null, tabBarStyle: { display: 'none' } }} />
     </Tabs>
   );
 }

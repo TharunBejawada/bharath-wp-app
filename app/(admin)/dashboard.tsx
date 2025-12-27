@@ -1,12 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useFocusEffect, useRouter } from 'expo-router'; // 👈 Added useFocusEffect
+import { useFocusEffect, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Linking,
   StatusBar as RNStatusBar,
   StyleSheet,
   Text,
@@ -14,18 +15,21 @@ import {
   View
 } from 'react-native';
 import * as Animatable from 'react-native-animatable';
-import { supabase } from '../../lib/supabase'; // 👈 Import Supabase
+import { supabase } from '../../lib/supabase';
 
 export default function AdminDashboard() {
   const router = useRouter();
 
-  // 📊 1. Real State (Instead of Mock)
+  // 📊 1. Real State
   const [stats, setStats] = useState({
     totalStock: 0,
     pendingInquiries: 0,
     serviceRequests: 0,
   });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  
+  // 🚨 NEW: Alert State
+  const [dueAlerts, setDueAlerts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   // 📥 2. Fetch Real Data
@@ -33,54 +37,97 @@ export default function AdminDashboard() {
     setLoading(true);
     try {
       // A. Get Stock Count
-      const { count: stockCount, error: stockError } = await supabase
+      const { count: stockCount } = await supabase
         .from('products')
-        .select('*', { count: 'exact', head: true }); // 'head: true' means don't download data, just count
+        .select('*', { count: 'exact', head: true });
 
-      // B. Get Booking Stats (Pending)
-      const { count: pendingCount, error: bookingError } = await supabase
+      // B. Get User Booking Stats (Pending)
+      const { count: pendingBookings } = await supabase
         .from('bookings')
         .select('*', { count: 'exact', head: true })
         .eq('status', 'Pending');
       
-      // C. Get Total Service Requests (All bookings)
-      const { count: totalServiceCount } = await supabase
+      // C1. Get All Active Bookings (Pending + Confirmed)
+      const { count: activeBookings } = await supabase
         .from('bookings')
-        .select('*', { count: 'exact', head: true });
+        .select('*', { count: 'exact', head: true })
+        .neq('status', 'Completed')
+        .neq('status', 'Cancelled');
 
-      // D. Get Recent Activity List (Last 5 bookings)
-      const { data: activityList, error: listError } = await supabase
+      // C2. Get Pending AMC Jobs
+      const { count: pendingAMC } = await supabase
+        .from('service_schedule')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'Pending');
+      
+      // D. Get Recent Activity List
+      const { data: activityList } = await supabase
         .from('bookings')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(5);
 
-      if (stockError || bookingError || listError) throw new Error("Data fetch failed");
-
       setStats({
         totalStock: stockCount || 0,
-        pendingInquiries: pendingCount || 0,
-        serviceRequests: totalServiceCount || 0,
+        pendingInquiries: pendingBookings || 0,
+        serviceRequests: (activeBookings || 0) + (pendingAMC || 0),
       });
 
       setRecentActivity(activityList || []);
 
+      // 🚨 E. SMART ALERT CHECK (+/- 7 Days)
+      const today = new Date();
+      const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(today.getDate() - 7);
+      const sevenDaysLater = new Date(); sevenDaysLater.setDate(today.getDate() + 7);
+
+      const { data: alerts, error: alertError } = await supabase
+        .from('service_schedule')
+        .select(`
+          id, due_date, service_type,
+          sold_products (
+            product_name,
+            customers ( name, mobile )
+          )
+        `)
+        .eq('status', 'Pending')
+        .gte('due_date', sevenDaysAgo.toISOString().split('T')[0]) // >= -7 days
+        .lte('due_date', sevenDaysLater.toISOString().split('T')[0]); // <= +7 days
+
+      if (!alertError) {
+        setDueAlerts(alerts || []);
+      }
+
     } catch (error) {
       console.error(error);
-      // Optional: Alert.alert("Error", "Could not load dashboard data");
     } finally {
       setLoading(false);
     }
   };
 
-  // 🔄 Refresh data whenever screen comes into focus
   useFocusEffect(
     useCallback(() => {
       fetchDashboardData();
     }, [])
   );
 
-  // 🕒 Helper: Simple Time Formatter
+  // 🟢 Helper: WhatsApp Sender for Alerts
+  const sendReminder = (item: any) => {
+    const customer = item.sold_products?.customers;
+    const product = item.sold_products?.product_name;
+    const dueDate = new Date(item.due_date).toDateString();
+    
+    if (!customer?.mobile) {
+      Alert.alert("Error", "No mobile number found for this customer.");
+      return;
+    }
+
+    const message = `Hello ${customer.name}, this is Lakshman from Bharath Water Purifiers. \n\nReminder: Your *${item.service_type}* for *${product}* is due around *${dueDate}*. \n\nPlease let us know when we can visit for the service. Thank you!`;
+    const url = `whatsapp://send?phone=91${customer.mobile}&text=${encodeURIComponent(message)}`;
+    
+    Linking.openURL(url).catch(() => Alert.alert("Error", "WhatsApp is not installed"));
+  };
+
+  // 🕒 Helper: Time Formatter
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
     const now = new Date();
@@ -112,7 +159,6 @@ export default function AdminDashboard() {
         animation="fadeInUp" 
         delay={index * 100 + 300} 
       >
-        {/* 👇 WRAP CONTENT IN TOUCHABLE OPACITY */}
         <TouchableOpacity 
           style={styles.card}
           onPress={() => router.push({ pathname: '/(admin)/Booking Details', params: { id: item.id } })}
@@ -156,13 +202,21 @@ export default function AdminDashboard() {
           </View>
 
           <View style={styles.headerActions}>
+            
             <TouchableOpacity 
-              onPress={() => router.push('/(admin)/Availability')}
-              onLongPress={() => Alert.alert("Availability Manager", "Block holidays or specific time slots.")}
+              onPress={() => router.push('/(admin)/Add Sale')}
+              style={[styles.iconButton, { backgroundColor: 'rgba(59, 130, 246, 0.3)', borderColor: '#60a5fa' }]}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="person-add" size={20} color="white" />
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              onPress={() => router.push('/(admin)/Sales History')}
               style={styles.iconButton}
               activeOpacity={0.7}
             >
-              <Ionicons name="calendar" size={22} color="white" />
+              <Ionicons name="receipt" size={20} color="white" />
             </TouchableOpacity>
 
             <TouchableOpacity 
@@ -174,49 +228,106 @@ export default function AdminDashboard() {
           </View>
         </View>
 
-        {/* 2. STATS GRID */}
-        <Animatable.View animation="fadeInDown" delay={300} style={styles.statsContainer}>
-          
-          {/* Stat 1: Stock (REAL) */}
-          <TouchableOpacity 
-            style={styles.statCard} 
-            onPress={() => router.push('/(admin)/Stock')} 
-          >
-            <View style={[styles.statIcon, { backgroundColor: '#dbeafe' }]}>
-              <Ionicons name="cube" size={24} color="#2563eb" />
+        {/* 🚨 SMART ALERT BANNER (Only shows if alerts exist) */}
+        {dueAlerts.length > 0 && (
+          <Animatable.View animation="pulse" iterationCount="infinite" duration={2000} style={styles.alertBanner}>
+            <View style={styles.alertHeader}>
+              <Ionicons name="warning" size={20} color="#b91c1c" />
+              <Text style={styles.alertTitle}>Action Required: {dueAlerts.length} Services Due</Text>
             </View>
-            <Text style={styles.statNumber}>
-              {loading ? '-' : stats.totalStock}
-            </Text> 
-            <Text style={styles.statLabel}>Manage Stock</Text>
-          </TouchableOpacity>
-
-          {/* Stat 2: Pending Inquiries (REAL) */}
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: '#ffedd5' }]}>
-              <Ionicons name="chatbubbles" size={24} color="#ea580c" />
+            
+            {/* Show first alert as preview */}
+            <View style={styles.alertItem}>
+              <Text style={styles.alertText}>
+                {dueAlerts[0].sold_products?.customers?.name} • {dueAlerts[0].service_type}
+              </Text>
+              <TouchableOpacity 
+                style={styles.whatsappBtn} 
+                onPress={() => sendReminder(dueAlerts[0])}
+              >
+                <Ionicons name="logo-whatsapp" size={16} color="white" />
+                <Text style={styles.whatsappText}>Alert Customer</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.statNumber}>
-              {loading ? '-' : stats.pendingInquiries}
-            </Text>
-            <Text style={styles.statLabel}>Pending</Text>
-          </View>
 
-          {/* Stat 3: Total Requests (REAL) */}
-          <View style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: '#f3e8ff' }]}>
-              <Ionicons name="build" size={24} color="#9333ea" />
+            {/* If more than 1, show link to full list */}
+            {dueAlerts.length > 1 && (
+              <TouchableOpacity onPress={() => router.push('/(admin)/Upcoming Services')}>
+                 <Text style={styles.viewAllAlerts}>+ {dueAlerts.length - 1} more (View All)</Text>
+              </TouchableOpacity>
+            )}
+          </Animatable.View>
+        )}
+
+        {/* 2. STATS GRID (Only show if NO alerts, or push down if alerts exist - handled by layout flow) */}
+        {!dueAlerts.length && (
+          <Animatable.View animation="fadeInDown" delay={300} style={styles.statsContainer}>
+            
+            <TouchableOpacity 
+              style={styles.statCard} 
+              onPress={() => router.push('/(admin)/Stock')} 
+            >
+              <View style={[styles.statIcon, { backgroundColor: '#dbeafe' }]}>
+                <Ionicons name="cube" size={24} color="#2563eb" />
+              </View>
+              <Text style={styles.statNumber}>
+                {loading ? '-' : stats.totalStock}
+              </Text> 
+              <Text style={styles.statLabel}>Manage Stock</Text>
+            </TouchableOpacity>
+
+            <View style={styles.statCard}>
+              <View style={[styles.statIcon, { backgroundColor: '#ffedd5' }]}>
+                <Ionicons name="chatbubbles" size={24} color="#ea580c" />
+              </View>
+              <Text style={styles.statNumber}>
+                {loading ? '-' : stats.pendingInquiries}
+              </Text>
+              <Text style={styles.statLabel}>Pending</Text>
             </View>
-            <Text style={styles.statNumber}>
-              {loading ? '-' : stats.serviceRequests}
-            </Text>
-            <Text style={styles.statLabel}>Total Jobs</Text>
-          </View>
 
-        </Animatable.View>
+            <TouchableOpacity 
+              style={styles.statCard}
+              onPress={() => router.push('/(admin)/Upcoming Services')}
+            >
+              <View style={[styles.statIcon, { backgroundColor: '#f3e8ff' }]}>
+                <Ionicons name="build" size={24} color="#9333ea" />
+              </View>
+              <Text style={styles.statNumber}>
+                {loading ? '-' : stats.serviceRequests}
+              </Text>
+              <Text style={styles.statLabel}>Total Jobs</Text>
+            </TouchableOpacity>
+
+          </Animatable.View>
+        )}
+
+        {/* If alerts exist, we still want to show stats below, just shift them down if needed by removing the !dueAlerts.length check above if you prefer both always visible. 
+            For now, I hid stats when alerts appear to focus attention, as per "Alert" nature. 
+            Let's keep stats visible BELOW alert if you prefer: */}
+        
+        {dueAlerts.length > 0 && (
+           <Animatable.View animation="fadeInDown" delay={300} style={[styles.statsContainer, { marginTop: 20 }]}>
+             <TouchableOpacity style={styles.statCard} onPress={() => router.push('/(admin)/Stock')}>
+               <View style={[styles.statIcon, { backgroundColor: '#dbeafe' }]}>
+                 <Ionicons name="cube" size={24} color="#2563eb" />
+               </View>
+               <Text style={styles.statNumber}>{loading ? '-' : stats.totalStock}</Text> 
+               <Text style={styles.statLabel}>Stock</Text>
+             </TouchableOpacity>
+             <TouchableOpacity style={styles.statCard} onPress={() => router.push('/(admin)/Upcoming Services')}>
+               <View style={[styles.statIcon, { backgroundColor: '#f3e8ff' }]}>
+                 <Ionicons name="build" size={24} color="#9333ea" />
+               </View>
+               <Text style={styles.statNumber}>{loading ? '-' : stats.serviceRequests}</Text>
+               <Text style={styles.statLabel}>Jobs</Text>
+             </TouchableOpacity>
+           </Animatable.View>
+        )}
+
       </LinearGradient>
 
-      {/* 3. RECENT ACTIVITY LIST (REAL) */}
+      {/* 3. RECENT ACTIVITY LIST */}
       <View style={styles.listContainer}>
         <Text style={styles.sectionTitle}>Recent Activity</Text>
         
@@ -259,7 +370,7 @@ const styles = StyleSheet.create({
   header: {
     paddingTop: RNStatusBar.currentHeight ? RNStatusBar.currentHeight + 20 : 60,
     paddingHorizontal: 24,
-    paddingBottom: 60,
+    paddingBottom: 40, // Increased bottom padding for layout
     borderBottomLeftRadius: 30,
     borderBottomRightRadius: 30,
   },
@@ -300,6 +411,26 @@ const styles = StyleSheet.create({
   welcomeText: { color: '#94a3b8', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
   headerTitle: { color: 'white', fontSize: 32, fontWeight: '800' },
   adminInitials: { color: 'white', fontWeight: 'bold' },
+
+  // 🚨 ALERT STYLES
+  alertBanner: {
+    backgroundColor: '#fef2f2', 
+    borderRadius: 16, 
+    padding: 16, 
+    marginTop: 10,
+    borderWidth: 1, 
+    borderColor: '#fca5a5', 
+    shadowColor: '#b91c1c', 
+    shadowOpacity: 0.1, 
+    shadowRadius: 10
+  },
+  alertHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  alertTitle: { fontSize: 16, fontWeight: 'bold', color: '#b91c1c', marginLeft: 8 },
+  alertItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: 'white', padding: 10, borderRadius: 10 },
+  alertText: { fontSize: 13, fontWeight: '600', color: '#1e293b', flex: 1, marginRight: 5 },
+  whatsappBtn: { flexDirection: 'row', backgroundColor: '#25D366', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6, alignItems: 'center' },
+  whatsappText: { color: 'white', fontSize: 12, fontWeight: 'bold', marginLeft: 4 },
+  viewAllAlerts: { textAlign: 'center', color: '#b91c1c', fontSize: 12, fontWeight: '600', marginTop: 10, textDecorationLine: 'underline' },
   
   statsContainer: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   statCard: {
