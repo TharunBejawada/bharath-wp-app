@@ -4,6 +4,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -22,7 +23,6 @@ export default function SalesHistory() {
   
   const fetchSales = async () => {
     setLoading(true);
-    // Fetch Sales + Customer Details + Service Schedule
     const { data, error } = await supabase
       .from('sold_products')
       .select(`
@@ -44,7 +44,6 @@ export default function SalesHistory() {
   );
 
   const handleInvoice = (item: any) => {
-    // Prepare data for the generator
     const details = {
       id: item.id,
       date: item.purchase_date,
@@ -61,17 +60,66 @@ export default function SalesHistory() {
         mobile: item.customers?.mobile,
         address: item.customers?.address
       },
-      amcSchedule: item.service_schedule // Pass the AMC array
+      amcSchedule: item.service_schedule 
     };
     generateAndShareInvoice(details);
   };
 
+  // 🔴 DELETE LOGIC
+  const handleDelete = (item: any) => {
+    Alert.alert(
+      "Delete Sale",
+      "Are you sure you want to delete this sale? This will also permanently delete all associated AMC schedules. This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Yes, Delete", 
+          style: "destructive",
+          onPress: async () => {
+            setLoading(true);
+            try {
+              // 1. Delete associated service schedules first (if your DB doesn't cascade automatically)
+              await supabase.from('service_schedule').delete().eq('sold_product_id', item.id);
+              
+              // 2. Delete the actual product sale
+              const { error } = await supabase.from('sold_products').delete().eq('id', item.id);
+              
+              if (error) throw error;
+              Alert.alert("Deleted", "The sale record has been removed.");
+              fetchSales();
+            } catch (error: any) {
+              Alert.alert("Error", "Could not delete: " + error.message);
+              setLoading(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // 🔵 EDIT LOGIC (Navigates to Add Sale with pre-filled params)
+  const handleEdit = (item: any) => {
+    router.push({
+      pathname: '/(admin)/Add Sale',
+      params: {
+        isEditMode: 'true',
+        saleId: item.id,
+        customerId: item.customer_id,
+        name: item.customers?.name,
+        mobile: item.customers?.mobile,
+        address: item.customers?.address,
+        productName: item.product_name,
+        model: item.model,
+        actualPrice: item.price_actual,
+        salePrice: item.price_offer,
+        purchaseDate: item.purchase_date
+      }
+    });
+  };
+
   const renderItem = ({ item }: { item: any }) => {
-    // Calculate Service Stats
     const totalServices = item.service_schedule?.length || 0;
     const completedServices = item.service_schedule?.filter((s: any) => s.status === 'Completed').length || 0;
-    
-    // Find next pending service
     const nextService = item.service_schedule
       ?.filter((s: any) => s.status === 'Pending')
       .sort((a: any, b: any) => new Date(a.due_date).getTime() - new Date(b.due_date).getTime())[0];
@@ -113,7 +161,7 @@ export default function SalesHistory() {
           </View>
         )}
 
-        {/* SERVICE SUMMARY (If AMC exists) */}
+        {/* SERVICE SUMMARY */}
         {totalServices > 0 && (
           <View style={styles.serviceBox}>
             <View style={styles.rowBetween}>
@@ -130,11 +178,21 @@ export default function SalesHistory() {
 
         <View style={styles.divider} />
 
-        {/* ACTIONS */}
-        <TouchableOpacity style={styles.invoiceBtn} onPress={() => handleInvoice(item)}>
-          <Ionicons name="print-outline" size={18} color="white" />
-          <Text style={styles.btnText}>Generate & Share Invoice</Text>
-        </TouchableOpacity>
+        {/* 🛠️ NEW ACTIONS ROW */}
+        <View style={styles.actionRowContainer}>
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#fef2f2' }]} onPress={() => handleDelete(item)}>
+            <Ionicons name="trash" size={16} color="#ef4444" />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#e0f2fe' }]} onPress={() => handleEdit(item)}>
+            <Ionicons name="pencil" size={16} color="#0284c7" />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.invoiceBtn} onPress={() => handleInvoice(item)}>
+            <Ionicons name="print-outline" size={18} color="white" />
+            <Text style={styles.btnText}>Generate Invoice</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   };
@@ -142,7 +200,7 @@ export default function SalesHistory() {
   return (
     <View style={styles.container}>
       <LinearGradient colors={['#0f172a', '#334155']} style={styles.header}>
-        <View style={styles.headerRow}>
+        <View style={styles.headerRow2}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color="white" />
           </TouchableOpacity>
@@ -173,7 +231,7 @@ export default function SalesHistory() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8fafc' },
   header: { paddingTop: 60, paddingBottom: 20, paddingHorizontal: 20 },
-  headerRow: { flexDirection: 'row', alignItems: 'center' },
+  headerRow2: { flexDirection: 'row', alignItems: 'center' }, // Renamed to avoid clash
   backButton: { marginRight: 15 },
   headerTitle: { color: 'white', fontSize: 20, fontWeight: 'bold' },
   
@@ -183,12 +241,10 @@ const styles = StyleSheet.create({
   productName: { fontSize: 16, fontWeight: 'bold', color: '#1e293b' },
   model: { fontSize: 14, color: '#64748b', fontWeight: 'normal' },
   date: { fontSize: 12, color: '#94a3b8', marginTop: 2 },
-  
   actualPrice: { fontSize: 12, color: '#ef4444', textDecorationLine: 'line-through', marginBottom: 2 },
   salePrice: { fontSize: 18, fontWeight: 'bold', color: '#059669' },
   
   divider: { height: 1, backgroundColor: '#f1f5f9', marginVertical: 12 },
-  
   detailsRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 15 },
   iconRow: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   detailText: { marginLeft: 6, fontSize: 13, color: '#475569', flexShrink: 1 },
@@ -199,7 +255,10 @@ const styles = StyleSheet.create({
   serviceCount: { fontSize: 12, fontWeight: 'bold', color: '#0369a1' },
   nextDue: { fontSize: 12, color: '#0ea5e9' },
 
-  invoiceBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, backgroundColor: '#1e293b', borderRadius: 12, marginTop: 5 },
+  // New Action Row Styles
+  actionRowContainer: { flexDirection: 'row', gap: 10, marginTop: 5 },
+  actionBtn: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  invoiceBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#1e293b', borderRadius: 12 },
   btnText: { marginLeft: 8, fontSize: 14, fontWeight: '600', color: 'white' },
   
   center: { alignItems: 'center', marginTop: 50 },

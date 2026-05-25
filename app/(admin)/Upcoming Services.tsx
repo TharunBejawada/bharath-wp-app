@@ -105,6 +105,16 @@ export default function UpcomingServices() {
     Linking.openURL(url).catch(() => Alert.alert("Error", "WhatsApp not installed"));
   };
 
+  // 🆕 NEW ACTION: Direct Dialer launcher
+  const handleCall = (item: any) => {
+    if (!item.mobile) {
+      Alert.alert("Missing Information", "No mobile number found for this customer.");
+      return;
+    }
+    const url = `tel:${item.mobile}`;
+    Linking.openURL(url).catch(() => Alert.alert("Error", "Could not launch native phone dialer."));
+  };
+
   const markComplete = async (item: any) => {
     Alert.alert("Confirm", "Mark this job as Done?", [
       { text: "Cancel", style: "cancel" },
@@ -172,11 +182,19 @@ export default function UpcomingServices() {
           <Text style={styles.dateText}>📅 {new Date(item.date).toDateString()}</Text>
 
           <View style={styles.actionRow}>
+            {/* WhatsApp Reminder Button */}
             <TouchableOpacity style={styles.btnOutline} onPress={() => handleWhatsApp(item)}>
               <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
               <Text style={[styles.btnText, { color: '#25D366' }]}>Remind</Text>
             </TouchableOpacity>
 
+            {/* 🆕 Call Dialer Button */}
+            <TouchableOpacity style={[styles.btnOutline, { borderColor: '#3b82f6' }]} onPress={() => handleCall(item)}>
+              <Ionicons name="call" size={18} color="#3b82f6" />
+              <Text style={[styles.btnText, { color: '#3b82f6' }]}>Call</Text>
+            </TouchableOpacity>
+
+            {/* Complete Marker Button */}
             <TouchableOpacity style={[styles.btnFill, { backgroundColor: '#0f172a' }]} onPress={() => markComplete(item)}>
               <Ionicons name="checkmark-circle" size={18} color="white" />
               <Text style={styles.btnTextWhite}>Complete</Text>
